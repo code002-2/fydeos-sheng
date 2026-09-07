@@ -1,0 +1,563 @@
+# ============================================================================
+# 🐧 Build FydeOS RootFS for Xiaomi Pad 6s Pro (Sheng)
+#
+# Based on the official FydeOS for Raspberry Pi 5 / 500 / 500+ image,
+# re-packaged for sheng:
+#   - kernel from ianchb/sm8550-mainline (prebuilt or custom build)
+#   - FydeOS ROOT-A (ChromeOS rootfs) kept, BCM2712 modules replaced with
+#     sheng kernel modules, sheng firmware added
+#   - boot.img via prebuilt kernel repack (console=tty0) or local mkbootimg
+#   - cmdline: root=PARTLABEL=<label> rootwait ro cros_debug cros_secure
+#              chromiumos.allow_overlayfs (same flow as the RPi image)
+#   - separate stateful STATE image (ext4, label STATE) for user data
+# ============================================================================
+
+name: Build FydeOS RootFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      fydeos_url:
+        description: 'FydeOS SBC (RPi 5/500/500+) image download URL'
+        type: string
+        default: 'https://download.fydeos.io/v22.1/FydeOS_for_SBC_Pi5_v22.1-com.bin.zip'
+
+      boot_mode:
+        description: |
+          Boot mode:
+          - single: Boot from partition "userdata"
+          - dual: Boot from partition "linux"
+          - custom: Boot from custom partition (No prebuilt kernel available)
+        type: choice
+        options:
+          - 'single (userdata)'
+          - 'dual (linux)'
+          - 'custom'
+        default: 'dual (linux)'
+
+      quiet_boot:
+        description: 'Add "quiet" to the kernel command line'
+        type: boolean
+        default: true
+
+      custom_partition:
+        description: 'Custom partition (required when boot_mode=custom)'
+        type: string
+        required: false
+        default: ''
+
+      kernel_source:
+        description: |
+          Kernel Source:
+          - prebuilt: ianchb/sm8550-mainline
+          - custom_build: Custom repo
+        type: choice
+        options:
+          - 'prebuilt'
+          - 'custom_build'
+        default: 'prebuilt'
+
+      kernel_repo:
+        description: 'Kernel Repo URL (required when kernel_source=custom_build)'
+        type: string
+        required: false
+        default: 'https://github.com/ianchb/sm8550-mainline'
+
+      kernel_branch:
+        description: 'Kernel Branch (required when kernel_source=custom_build)'
+        type: string
+        required: false
+        default: 'sheng-7.2.2'
+
+      kernel_config:
+        description: 'Kernel Config (required when kernel_source=custom_build)'
+        type: string
+        required: false
+        default: 'sm8550.config'
+
+      firmware_repo:
+        description: 'Firmware Repo URL'
+        type: string
+        required: false
+        default: 'https://github.com/ianchb/sheng-firmware'
+
+      firmware_branch:
+        description: 'Firmware Branch'
+        type: string
+        required: false
+        default: 'master'
+
+      state_size:
+        description: 'Stateful partition image size in MiB (ext4, label STATE)'
+        type: string
+        required: false
+        default: '8192'
+
+# ============================================================================
+# Build Jobs
+# ============================================================================
+
+jobs:
+  # ==========================================================================
+  # Kernel (conditional on custom_build) — same as debian-sheng rootfs.yml
+  # ==========================================================================
+  build-kernel:
+    name: "Build Kernel"
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: "Skip (Prebuilt Kernel)"
+        if: ${{ inputs.kernel_source != 'custom_build' }}
+        run: echo "✓ Using prebuilt kernel, build skipped"
+
+      - name: "Checkout Repo"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/checkout@v7
+
+      - name: "Install Build Tools"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential flex bison libssl-dev libelf-dev bc \
+            ccache clang llvm lld
+          mkdir -p /home/runner/.ccache
+          ccache --set-config=max_size=10G
+          ccache --set-config=cache_dir=/home/runner/.ccache
+          ccache --set-config=sloppiness=file_macro,locale,time_macros
+          echo "✓ Build tools installed"
+
+      - name: "Restore ccache"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/cache@v6
+        with:
+          path: /home/runner/.ccache
+          key: ccache-kernel-${{ inputs.kernel_branch }}-${{ inputs.kernel_config }}-${{ hashFiles(inputs.kernel_config) }}
+          restore-keys: |
+            ccache-kernel-${{ inputs.kernel_branch }}-${{ inputs.kernel_config }}-
+            ccache-kernel-${{ inputs.kernel_branch }}-
+            ccache-kernel-
+
+      - name: "Clone Kernel Repo"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        run: |
+          git clone "${{ inputs.kernel_repo }}" \
+            --branch "${{ inputs.kernel_branch }}" \
+            --depth 1 \
+            linux
+          echo "✓ Kernel repo cloned"
+
+      - name: "Build Kernel"
+        id: build
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        run: |
+          export CCACHE_DIR=/home/runner/.ccache
+          export PATH="/usr/lib/ccache:$PATH"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy"
+          export OBJDUMP="llvm-objdump"
+          export READELF="llvm-readelf"
+          export STRIP="llvm-strip"
+
+          cp "${{ github.workspace }}/${{ inputs.kernel_config }}" linux/.config
+          cd linux
+
+          make -j$(nproc) ARCH=arm64 LLVM=1
+
+          KVER="$(make kernelrelease -s)"
+          echo "kernel_version=$KVER" >> $GITHUB_OUTPUT
+          echo "  Kernel version: $KVER"
+
+          make -j$(nproc) ARCH=arm64 LLVM=1 \
+            INSTALL_MOD_PATH="${{ github.workspace }}/linux-xiaomi-sheng" \
+            modules_install
+          rm -rf "${{ github.workspace }}/linux-xiaomi-sheng/lib/modules/"*"/build" || true
+
+          mkdir -p "${{ github.workspace }}/linux-xiaomi-sheng/boot"
+          install -Dm644 arch/arm64/boot/Image.gz \
+            "${{ github.workspace }}/linux-xiaomi-sheng/boot/Image.gz"
+          install -Dm644 arch/arm64/boot/dts/qcom/sm8550-xiaomi-sheng.dtb \
+            "${{ github.workspace }}/linux-xiaomi-sheng/boot/sm8550-xiaomi-sheng.dtb"
+          install -Dm644 .config \
+            "${{ github.workspace }}/linux-xiaomi-sheng/boot/config-${KVER}"
+          install -Dm644 System.map \
+            "${{ github.workspace }}/linux-xiaomi-sheng/boot/System.map-${KVER}"
+
+          cat arch/arm64/boot/Image.gz \
+              arch/arm64/boot/dts/qcom/sm8550-xiaomi-sheng.dtb \
+            > "${{ github.workspace }}/Image.gz-dtb_sheng"
+
+          cd "${{ github.workspace }}"
+          ccache --show-stats --verbose | grep -E "(hit rate|cache hit|cache miss|max size)" || true
+          echo "✓ Kernel build complete"
+
+      - name: "Package Kernel"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        run: |
+          KVER="${{ steps.build.outputs.kernel_version }}"
+          mkdir -p linux-xiaomi-sheng/DEBIAN
+          cat > linux-xiaomi-sheng/DEBIAN/control << CTRL
+          Package: linux-xiaomi-sheng
+          Version: ${KVER}
+          Architecture: arm64
+          Maintainer: map220v
+          Section: kernel
+          Description: Kernel and Modules for Xiaomi Pad 6s Pro
+          CTRL
+          dpkg-deb --build --root-owner-group linux-xiaomi-sheng
+          echo "✓ linux-xiaomi-sheng.deb packaged"
+
+      - name: "Upload Kernel Package"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-custom-deb
+          path: linux-xiaomi-sheng.deb
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: "Upload Kernel Image"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-custom-image
+          path: Image.gz-dtb_sheng
+          retention-days: 3
+          if-no-files-found: error
+
+  # ==========================================================================
+  # RootFS Assembly — FydeOS ROOT-A + sheng kernel/firmware + STATE image
+  # ==========================================================================
+  build-rootfs:
+    name: "Build FydeOS RootFS"
+    runs-on: ubuntu-24.04-arm
+    needs: [build-kernel]
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      ROOTFS_MOUNT: /mnt/rootfs
+
+    steps:
+      # ----------------------------------------------------------------
+      # Checkout & Validate
+      # ----------------------------------------------------------------
+
+      - name: "Checkout Repo"
+        uses: actions/checkout@v7
+
+      - name: "Verify Arguments"
+        run: |
+          if [[ "${{ inputs.boot_mode }}" == "custom" ]]; then
+            if [[ "${{ inputs.kernel_source }}" != "custom_build" ]]; then
+              echo "Error: Custom partition requires custom_build kernel"
+              exit 1
+            fi
+            if [[ -z "${{ inputs.custom_partition }}" ]]; then
+              echo "Error: custom_partition is required when boot_mode=custom"
+              exit 1
+            fi
+          fi
+          echo "✓ Arguments verified"
+
+      - name: "Parse Partition Label"
+        id: partition
+        run: |
+          if [[ "${{ inputs.quiet_boot }}" == "true" ]]; then
+            QUIET_BOOT=true
+          else
+            QUIET_BOOT=false
+          fi
+          echo "quiet_boot_enabled=$QUIET_BOOT" >> $GITHUB_OUTPUT
+
+          case "${{ inputs.boot_mode }}" in
+            'single (userdata)')
+              echo "label=userdata" >> $GITHUB_OUTPUT
+              echo "boot_img_pattern=boot_sheng_singleboot.img" >> $GITHUB_OUTPUT
+              ;;
+            'dual (linux)')
+              echo "label=linux" >> $GITHUB_OUTPUT
+              echo "boot_img_pattern=boot_sheng_dualboot.img" >> $GITHUB_OUTPUT
+              ;;
+            'custom')
+              echo "label=${{ inputs.custom_partition }}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          echo "✓ Partition label set"
+
+      # ----------------------------------------------------------------
+      # Install Tools
+      # ----------------------------------------------------------------
+
+      - name: "Install Build Tools"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            unzip xz-utils e2fsprogs parted fdisk util-linux \
+            git curl kmod file
+          echo "✓ Build tools installed"
+
+      # ----------------------------------------------------------------
+      # Acquire FydeOS Base Image
+      # ----------------------------------------------------------------
+
+      - name: "Download FydeOS Image"
+        run: |
+          curl -fL --retry 3 -o fydeos.zip "${{ inputs.fydeos_url }}"
+          ls -lh fydeos.zip
+          echo "✓ FydeOS image downloaded"
+
+      - name: "Extract Disk Image"
+        run: |
+          unzip -o fydeos.zip
+          rm -f fydeos.zip
+          BIN=$(ls -1 *.bin 2>/dev/null | head -n1)
+          [ -n "$BIN" ] || { echo "::error::no .bin found in archive"; exit 1; }
+          echo "BIN=$BIN" >> $GITHUB_ENV
+          ls -lh "$BIN"
+          echo "✓ Disk image extracted"
+
+      # ----------------------------------------------------------------
+      # Acquire Kernel & Firmware
+      # ----------------------------------------------------------------
+
+      - name: "[Prebuilt] Download Kernel"
+        if: ${{ inputs.kernel_source != 'custom_build' }}
+        run: |
+          LATEST_TAG=$(gh release list --repo ianchb/sm8550-mainline --limit 1 --json tagName -q '.[0].tagName')
+          echo "  Latest tag: $LATEST_TAG"
+
+          BOOT_PATTERN="${{ steps.partition.outputs.boot_img_pattern }}"
+          gh release download "$LATEST_TAG" \
+            --repo ianchb/sm8550-mainline \
+            --pattern "$BOOT_PATTERN" \
+            --clobber
+          mv "$BOOT_PATTERN" boot.img
+
+          gh release download "$LATEST_TAG" \
+            --repo ianchb/sm8550-mainline \
+            --pattern "linux-xiaomi-sheng*.deb" \
+            --clobber
+          echo "✓ Prebuilt kernel downloaded"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "[Custom] Download Kernel Package"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: kernel-custom-deb
+
+      - name: "[Custom] Download Kernel Image"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: kernel-custom-image
+
+      - name: "Download Sheng Firmware"
+        run: |
+          git clone --depth 1 \
+            --branch "${{ inputs.firmware_branch }}" \
+            "${{ inputs.firmware_repo }}" \
+            fw-src
+          echo "✓ Firmware downloaded"
+
+      # ----------------------------------------------------------------
+      # Prepare & Modify FydeOS ROOT-A
+      # ----------------------------------------------------------------
+
+      - name: "Detect & Mount ROOT-A"
+        run: |
+          LOOP=$(sudo losetup -P -f --show "$BIN")
+          echo "  Loop device: $LOOP"
+          sleep 2
+          sudo partprobe "$LOOP" 2>/dev/null || true
+          sleep 2
+
+          echo "  Partitions:"
+          sudo blkid "$LOOP"p* 2>/dev/null || true
+
+          ROOTFS_DEV=""
+          for p in "$LOOP"p*; do
+            [ -b "$p" ] || continue
+            LBL=$(sudo blkid -o value -s LABEL "$p" 2>/dev/null)
+            SZ=$(sudo blockdev --getsize64 "$p" 2>/dev/null)
+            echo "  $p: label=$LBL size=$SZ"
+            if [ "$LBL" = "ROOT-A" ]; then
+              ROOTFS_DEV="$p"
+            fi
+          done
+          if [ -z "$ROOTFS_DEV" ]; then
+            for p in "$LOOP"p*; do
+              [ -b "$p" ] || continue
+              LBL=$(sudo blkid -o value -s LABEL "$p" 2>/dev/null)
+              SZ=$(sudo blockdev --getsize64 "$p" 2>/dev/null)
+              if [ -z "$ROOTFS_DEV" ] && [ "$LBL" = "ROOT-B" ] && [ "$SZ" -gt 1073741824 ]; then
+                ROOTFS_DEV="$p"
+              fi
+            done
+          fi
+          [ -n "$ROOTFS_DEV" ] || { echo "::error::ROOT partition not found"; exit 1; }
+          echo "ROOTFS_DEV=$ROOTFS_DEV" >> $GITHUB_ENV
+          echo "LOOP=$LOOP" >> $GITHUB_ENV
+          echo "✓ ROOT-A detected: $ROOTFS_DEV"
+
+      - name: "Check Filesystem"
+        run: |
+          sudo e2fsck -fy "$ROOTFS_DEV" || true
+          echo "✓ Filesystem checked"
+
+      - name: "Mount ROOT-A"
+        run: |
+          sudo mkdir -p "$ROOTFS_MOUNT"
+          sudo mount -o rw "$ROOTFS_DEV" "$ROOTFS_MOUNT"
+          df -h "$ROOTFS_MOUNT"
+          echo "✓ ROOT-A mounted"
+
+      - name: "Replace Kernel Modules"
+        run: |
+          sudo rm -rf "$ROOTFS_MOUNT/lib/modules/"* || true
+          sudo dpkg-deb -x linux-xiaomi-sheng.deb "$ROOTFS_MOUNT"
+          KVER=$(sudo ls "$ROOTFS_MOUNT/lib/modules" 2>/dev/null | head -n1)
+          echo "  Kernel modules dir: $KVER"
+          [ -n "$KVER" ] && [ -d "$ROOTFS_MOUNT/lib/modules/$KVER" ] || {
+            echo "::error::kernel modules missing after deb extraction"; exit 1; }
+          sudo depmod -b "$ROOTFS_MOUNT" "$KVER" || true
+          sudo ls -lh "$ROOTFS_MOUNT/lib/modules/$KVER/"modules.dep* 2>/dev/null || true
+          echo "✓ Kernel modules installed"
+
+      - name: "Install Sheng Firmware"
+        run: |
+          sudo cp -a fw-src/. "$ROOTFS_MOUNT/usr/lib/firmware/"
+          echo "✓ Sheng firmware installed"
+
+      - name: "Verify RootFS"
+        run: |
+          echo "  /sbin/init:"
+          sudo ls -l "$ROOTFS_MOUNT/sbin/init" 2>/dev/null || true
+          echo "  /opt/google/chrome:"
+          sudo ls "$ROOTFS_MOUNT/opt/google/chrome/chrome" 2>/dev/null | head -n2 || true
+          echo "  /etc/lsb-release:"
+          sudo cat "$ROOTFS_MOUNT/etc/lsb-release" 2>/dev/null | head -n5 || true
+          echo "✓ RootFS verified"
+
+      - name: "Unmount & Extract RootFS Image"
+        run: |
+          sudo umount "$ROOTFS_MOUNT" 2>/dev/null || true
+          # /sys path gives partition start/size in 512-byte sectors
+          PART=$(basename "$ROOTFS_DEV")
+          START=$(cat "/sys/block/$PART/start")
+          SIZE=$(cat "/sys/block/$PART/size")
+          echo "  Partition $PART: start=$START size=$SIZE sectors"
+          dd if="$BIN" of=rootfs.img bs=512 skip="$START" count="$SIZE" status=progress conv=fsync
+          sudo losetup -d "$LOOP" 2>/dev/null || true
+          rm -f "$BIN" fw-src
+          ls -lh rootfs.img
+          echo "✓ RootFS image extracted"
+
+      - name: "Create STATE Image"
+        run: |
+          truncate -s "${{ inputs.state_size }}M" state.img
+          mkfs.ext4 -F -q -L STATE state.img
+          tune2fs -l state.img | grep -E "(Filesystem volume name|Block count)" || true
+          echo "✓ STATE image created (${{ inputs.state_size }} MiB, ext4, label STATE)"
+
+      # ----------------------------------------------------------------
+      # Boot Image
+      # ----------------------------------------------------------------
+
+      - name: "[Prebuilt] Repack boot.img"
+        if: ${{ inputs.kernel_source != 'custom_build' }}
+        run: |
+          # Extract the kernel payload from the prebuilt boot image and repack
+          # it with the FydeOS command line.
+          python3 << 'PYEOF'
+          import struct, zlib, re
+          f = open('boot.img', 'rb').read()
+          kernel_size = struct.unpack('<I', f[8:12])[0]
+          koff = -(-(48 + 16 + 512 + 1024 + 20) // 4096) * 4096
+          if koff + kernel_size > len(f):
+              raise SystemExit('kernel payload offset mismatch')
+          open('kernel.bin', 'wb').write(f[koff:koff + kernel_size])
+          print(f'kernel payload extracted: {kernel_size} bytes')
+          im = zlib.decompress(open('kernel.bin', 'rb').read(), 16 + zlib.MAX_WBITS)
+          m = re.search(rb'Linux version (\d+\.\d+\.\d+[^\s]*)', im)
+          if m:
+              open('kernel-version.txt', 'w').write(m.group(1).decode())
+              print(f'kernel version: {m.group(1).decode()}')
+          PYEOF
+
+          PARTITION="${{ steps.partition.outputs.label }}"
+          CMDLINE="root=PARTLABEL=$PARTITION rootwait ro cros_debug cros_secure chromiumos.allow_overlayfs console=tty0 loglevel=7"
+          if [[ "${{ steps.partition.outputs.quiet_boot_enabled }}" == "true" ]]; then
+            CMDLINE="$CMDLINE quiet"
+          fi
+          chmod +x mkbootimg
+          ./mkbootimg \
+            --kernel kernel.bin \
+            --cmdline "$CMDLINE" \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --tags_offset 0x01e00000 \
+            --pagesize 4096 \
+            --id \
+            -o boot.img
+          echo "✓ boot.img repacked (cmdline: $CMDLINE)"
+          if [ -f kernel-version.txt ]; then
+            echo "  boot kernel version: $(cat kernel-version.txt)"
+          fi
+
+      - name: "[Custom] Generate boot.img"
+        if: ${{ inputs.kernel_source == 'custom_build' }}
+        run: |
+          PARTITION="${{ steps.partition.outputs.label }}"
+          CMDLINE="root=PARTLABEL=$PARTITION rootwait ro cros_debug cros_secure chromiumos.allow_overlayfs console=tty0 loglevel=7"
+          if [[ "${{ steps.partition.outputs.quiet_boot_enabled }}" == "true" ]]; then
+            CMDLINE="$CMDLINE quiet"
+          fi
+          chmod +x mkbootimg
+          ./mkbootimg \
+            --kernel Image.gz-dtb_sheng \
+            --cmdline "$CMDLINE" \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --tags_offset 0x01e00000 \
+            --pagesize 4096 \
+            --id \
+            -o boot.img
+          echo "✓ boot.img generated (cmdline: $CMDLINE)"
+
+      # ----------------------------------------------------------------
+      # Upload Final Artifacts
+      # ----------------------------------------------------------------
+
+      - name: "Upload RootFS Image"
+        uses: actions/upload-artifact@v7
+        with:
+          name: rootfs-fydeos-${{ steps.partition.outputs.label }}
+          path: rootfs.img
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 1
+
+      - name: "Upload STATE Image"
+        uses: actions/upload-artifact@v7
+        with:
+          name: state-fydeos
+          path: state.img
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 1
+
+      - name: "Upload Boot Image"
+        uses: actions/upload-artifact@v7
+        with:
+          name: boot-fydeos-${{ steps.partition.outputs.label }}
+          path: boot.img
+          retention-days: 14
+          if-no-files-found: warn
+          compression-level: 1
