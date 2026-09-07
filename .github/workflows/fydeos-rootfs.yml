@@ -618,6 +618,20 @@ jobs:
             echo "  boot kernel version: $(cat kernel-version.txt)"
           fi
 
+          # Alternate variant with explicit fbcon mapping (in case the panel
+          # console needs it - fbcon=map:1 as used by the plymouth images)
+          CMDLINE_ALT="$CMDLINE fbcon=map:1"
+          ./mkbootimg \
+            --kernel kernel.bin \
+            --cmdline "$CMDLINE_ALT" \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --tags_offset 0x01e00000 \
+            --pagesize 4096 \
+            --id \
+            -o boot-alt.img
+          echo "✓ boot-alt.img (cmdline: $CMDLINE_ALT)"
+
       - name: "[Custom] Generate boot.img"
         if: ${{ inputs.kernel_source == 'custom_build' }}
         run: |
@@ -665,6 +679,16 @@ jobs:
         with:
           name: boot-fydeos-${{ steps.partition.outputs.label }}
           path: boot.img
+          retention-days: 14
+          if-no-files-found: warn
+          compression-level: 1
+
+      - name: "Upload Boot Image (fbcon alt)"
+        if: ${{ inputs.kernel_source != 'custom_build' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: boot-fydeos-${{ steps.partition.outputs.label }}-alt
+          path: boot-alt.img
           retention-days: 14
           if-no-files-found: warn
           compression-level: 1
