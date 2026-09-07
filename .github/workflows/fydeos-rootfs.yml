@@ -528,32 +528,41 @@ jobs:
           # screen needed) and powers off - read it via TWRP afterwards.
           sudo tee "$ROOTFS_MOUNT/usr/bin/bootlog.sh" > /dev/null << 'BOOTLOG'
           #!/bin/sh
+          # give deferred display probes a chance, mount basics first
+          mount -t devtmpfs devtmpfs /dev 2>/dev/null
+          mount -t proc proc /proc 2>/dev/null
+          mount -t sysfs sysfs /sys 2>/dev/null
+          sleep 20
           exec > /bootlog.txt 2>&1
           echo "==== bootlog $(date) ===="
-          echo "cmdline: $(cat /proc/cmdline)"
+          echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
           echo
-          echo "--- rootfs check ---"
-          grep -E " / | /proc| /sys | /dev " /proc/mounts
-          ls /usr/bin/sh /bin/sh 2>&1
+          echo "--- mounts ---"
+          grep -E " / | /proc$| /sys| /dev " /proc/mounts 2>/dev/null
+          echo
+          echo "--- dev/dri & sysfs display ---"
+          ls -l /dev/dri/ 2>&1
+          ls /sys/class/drm/ 2>&1
+          ls /sys/class/backlight/ 2>&1
+          ls /sys/class/graphics/ 2>&1
+          cat /sys/class/backlight/*/brightness 2>/dev/null
+          echo
+          echo "--- full dmesg (display related) ---"
+          dmesg 2>/dev/null | grep -iE "panel|dsi|msm_drm|mdss|backlight|fb0|drm|novatek|adreno|gpu" | tail -80
           echo
           echo "--- modules ---"
           ls /lib/modules/ 2>&1
-          ls /sys/module/overlay 2>/dev/null && echo "overlay loaded" || echo "overlay NOT loaded"
           echo
           echo "--- stateful ---"
           mkdir -p /mnt/stateful_partition
           mount /dev/block/by-name/state /mnt/stateful_partition 2>&1 && echo "STATE MOUNTED" || echo "STATE mount failed"
           ls /mnt/stateful_partition 2>&1 | head -20
           echo
-          echo "--- display ---"
-          dmesg | grep -iE "panel|dsi|msm|mdss|backlight|fb0|drm" | head -60
-          echo
-          echo "--- firmware / dri ---"
-          ls /dev/dri/ 2>&1
-          ls /usr/lib64/dri/ 2>&1 | head
-          ls /usr/lib64/libgallium-25.0.7.so 2>&1
+          echo "--- firmware blob check ---"
+          ls -l /lib/firmware/novatek/ 2>&1
           echo
           echo "==== bootlog END ===="
+          dmesg > /dmesg-full.txt 2>/dev/null
           sync
           sleep 5
           poweroff -f 2>/dev/null || reboot -f 2>/dev/null
