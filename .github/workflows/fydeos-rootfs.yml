@@ -532,7 +532,16 @@ jobs:
           mount -t devtmpfs devtmpfs /dev 2>/dev/null
           mount -t proc proc /proc 2>/dev/null
           mount -t sysfs sysfs /sys 2>/dev/null
-          sleep 20
+          # load all kernel modules from the rootfs (mimics systemd/udev of a
+          # normal distro boot) - critical for module-based display bits
+          KVER=$(ls /lib/modules/ 2>/dev/null | head -n1)
+          echo "KVER=$KVER" >> /bootlog.txt 2>/dev/null
+          if [ -n "$KVER" ]; then
+            for m in $(find /lib/modules/$KVER/kernel -name '*.ko*' 2>/dev/null | sed 's|/lib/modules/.*/kernel/||;s|\.ko.*||;s|/|_|g'); do
+              modprobe "$m" 2>/dev/null
+            done
+          fi
+          sleep 15
           exec > /bootlog.txt 2>&1
           echo "==== bootlog $(date) ===="
           echo "cmdline: $(cat /proc/cmdline 2>/dev/null)"
@@ -548,10 +557,11 @@ jobs:
           cat /sys/class/backlight/*/brightness 2>/dev/null
           echo
           echo "--- full dmesg (display related) ---"
-          dmesg 2>/dev/null | grep -iE "panel|dsi|msm_drm|mdss|backlight|fb0|drm|novatek|adreno|gpu" | tail -80
+          dmesg 2>/dev/null | grep -iE "panel|dsi|msm_drm|mdss|backlight|fb0|drm|novatek|adreno|gpu|phy" | tail -100
           echo
           echo "--- modules ---"
           ls /lib/modules/ 2>&1
+          lsmod 2>&1 | head -30
           echo
           echo "--- stateful ---"
           mkdir -p /mnt/stateful_partition
