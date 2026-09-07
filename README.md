@@ -44,13 +44,24 @@ Prerequisites: unlocked bootloader, TWRP, fastboot. Inside TWRP, using `parted`,
 ### 3. Flash
 
 ```bash
-# Dual boot (slot B)
-fastboot erase dtbo_b
-fastboot flash boot_b boot.img
-fastboot flash linux rootfs.img
+# Single boot (userdata) — flash the ACTIVE slot (no slot activation needed)
+fastboot erase dtbo_ab
+fastboot flash boot boot.img
+fastboot flash userdata rootfs.img
 fastboot flash state state.img
 fastboot reboot
+
+# Or: flash slot B + activate it explicitly
+fastboot erase dtbo_b
+fastboot flash boot_b boot.img
+fastboot fastboot set_active b     # ← activation is MANDATORY
+fastboot reboot
 ```
+
+> **IMPORTANT**: this device is A/B-slot. Always either flash the active slot
+> (`fastboot flash boot`) or activate slot B after flashing (`fastboot set_active b`).
+> Without it the device boots the other (empty) slot and shows a black screen
+> with no logs, while TWRP still works fine.
 
 ### 4. First Boot
 
