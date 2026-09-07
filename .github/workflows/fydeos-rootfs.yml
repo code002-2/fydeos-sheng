@@ -254,9 +254,9 @@ jobs:
           ninja -C build
           DESTDIR=$PWD/stage meson install -C build
           cd ..
-          find . -name 'libdrm.so*' -not -path './stage/*' | head -n1
-          STAGE_LIBDRM=$(find stage -name 'libdrm.so.2.124.0' | head -n1)
+          STAGE_LIBDRM=$(find libdrm-2.4.124/stage -name 'libdrm.so.2.124.0' | head -n1)
           echo "  staging: $STAGE_LIBDRM"
+          [ -n "$STAGE_LIBDRM" ] || { echo "::error::libdrm not staged"; exit 1; }
           cp "$STAGE_LIBDRM" libdrm-2.4.124.so
           strings libdrm-2.4.124.so | grep -m3 -i freedreno || echo "WARNING: no freedreno strings"
           echo "✓ libdrm built"
@@ -280,7 +280,7 @@ jobs:
           ninja -C build
           DESTDIR=$PWD/stage meson install -C build
           cd ..
-          STAGE_GALLIUM=$(find stage -name 'libgallium-25.0.7.so' | head -n1)
+          STAGE_GALLIUM=$(find mesa-mesa-25.0.7/stage -name 'libgallium-25.0.7.so' | head -n1)
           echo "  staging: $STAGE_GALLIUM"
           [ -n "$STAGE_GALLIUM" ] || { echo "::error::libgallium not built"; exit 1; }
           cp "$STAGE_GALLIUM" libgallium-25.0.7.so
