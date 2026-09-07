@@ -267,7 +267,7 @@ jobs:
           tar -xf mesa.tar.gz
           cd mesa-mesa-25.0.7
           meson setup build \
-            -Dgallium-drivers=freedreno,swrast \
+            -Dgallium-drivers=freedreno \
             -Dvulkan-drivers= \
             -Degl=enabled \
             -Dgles1=enabled \
