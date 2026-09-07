@@ -269,7 +269,6 @@ jobs:
           meson setup build \
             -Dgallium-drivers=freedreno,swrast \
             -Dvulkan-drivers= \
-            -Degl-platforms=drm,surfaceless \
             -Degl=enabled \
             -Dgles1=enabled \
             -Dgles2=enabled \
@@ -286,6 +285,24 @@ jobs:
           cp "$STAGE_GALLIUM" libgallium-25.0.7.so
           strings libgallium-25.0.7.so | grep -m3 -i freedreno || true
           echo "✓ Mesa built"
+
+      - name: "Verify GLIBC Compatibility"
+        run: |
+          # FydeOS v22.1 rootfs ships glibc 2.41; the build host is glibc 2.39.
+          # Fail loudly if any produced library references a newer GLIBC symbol.
+          for lib in libgallium-25.0.7.so libdrm-2.4.124.so; do
+            MAX_VER=$(objdump -p "$lib" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+            echo "  $lib -> max $MAX_VER"
+            if [ -n "$MAX_VER" ]; then
+              MAJ=$(echo "$MAX_VER" | cut -d. -f1)
+              MIN=$(echo "$MAX_VER" | cut -d. -f2)
+              if [ "$MAJ" -gt 2 ] || { [ "$MAJ" -eq 2 ] && [ "$MIN" -gt 41 ]; }; then
+                echo "::error::$lib requires $MAX_VER - incompatible with rootfs glibc 2.41"
+                exit 1
+              fi
+            fi
+          done
+          echo "✓ GLIBC compatibility verified (rootfs glibc 2.41)"
 
       - name: "Upload GPU Stack"
         uses: actions/upload-artifact@v7
