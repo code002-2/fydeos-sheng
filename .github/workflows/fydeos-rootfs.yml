@@ -36,9 +36,9 @@ on:
         default: 'dual (linux)'
 
       quiet_boot:
-        description: 'Add "quiet" to the kernel command line'
+        description: 'Add "quiet" to the kernel command line (keep false during bring-up)'
         type: boolean
-        default: true
+        default: false
 
       custom_partition:
         description: 'Custom partition (required when boot_mode=custom)'
