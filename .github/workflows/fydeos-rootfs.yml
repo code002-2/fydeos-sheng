@@ -269,7 +269,7 @@ jobs:
           meson setup build \
             -Dgallium-drivers=freedreno,swrast \
             -Dvulkan-drivers= \
-            -Dplatforms=drm,surfaceless \
+            -Degl-platforms=drm,surfaceless \
             -Degl=enabled \
             -Dgles1=enabled \
             -Dgles2=enabled \
