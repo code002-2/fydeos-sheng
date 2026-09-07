@@ -519,8 +519,14 @@ jobs:
 
       - name: "Install Sheng Firmware"
         run: |
+          # ChromeOS rootfs keeps /lib and /usr/lib separate - the kernel
+          # firmware loader reads /lib/firmware, so copy to BOTH paths.
           sudo cp -a fw-src/. "$ROOTFS_MOUNT/usr/lib/firmware/"
-          echo "✓ Sheng firmware installed"
+          sudo cp -a fw-src/. "$ROOTFS_MOUNT/lib/firmware/"
+          echo "✓ Sheng firmware installed (usr/lib + lib)"
+          echo "  GPU firmware:"
+          sudo ls -l "$ROOTFS_MOUNT/lib/firmware/qcom/sm8550/sheng/" 2>/dev/null | head -n8
+          sudo ls -l "$ROOTFS_MOUNT/lib/firmware/qcom/a740_sqe.fw" 2>/dev/null || true
 
       - name: "Bake Boot Diagnostics Script"
         run: |
