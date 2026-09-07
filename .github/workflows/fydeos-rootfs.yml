@@ -450,7 +450,7 @@ jobs:
           sudo umount "$ROOTFS_MOUNT" 2>/dev/null || true
           # /sys path gives partition start/size in 512-byte sectors
           PART=$(basename "$ROOTFS_DEV")
-          DISK=$(basename "$(dirname "$ROOTFS_DEV")")
+          DISK=$(basename "$LOOP")
           START=$(cat "/sys/block/$DISK/$PART/start")
           SIZE=$(cat "/sys/block/$DISK/$PART/size")
           echo "  Partition $PART: start=$START size=$SIZE sectors"
