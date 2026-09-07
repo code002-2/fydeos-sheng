@@ -456,7 +456,7 @@ jobs:
           echo "  Partition $PART: start=$START size=$SIZE sectors"
           dd if="$BIN" of=rootfs.img bs=512 skip="$START" count="$SIZE" status=progress conv=fsync
           sudo losetup -d "$LOOP" 2>/dev/null || true
-          rm -f "$BIN" fw-src
+          rm -rf "$BIN" fw-src
           ls -lh rootfs.img
           echo "✓ RootFS image extracted"
 
