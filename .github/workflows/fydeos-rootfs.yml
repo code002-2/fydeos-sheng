@@ -522,6 +522,46 @@ jobs:
           sudo cp -a fw-src/. "$ROOTFS_MOUNT/usr/lib/firmware/"
           echo "✓ Sheng firmware installed"
 
+      - name: "Bake Boot Diagnostics Script"
+        run: |
+          # init=/usr/bin/bootlog.sh captures boot state into /bootlog.txt (no
+          # screen needed) and powers off - read it via TWRP afterwards.
+          sudo tee "$ROOTFS_MOUNT/usr/bin/bootlog.sh" > /dev/null << 'BOOTLOG'
+          #!/bin/sh
+          exec > /bootlog.txt 2>&1
+          echo "==== bootlog $(date) ===="
+          echo "cmdline: $(cat /proc/cmdline)"
+          echo
+          echo "--- rootfs check ---"
+          grep -E " / | /proc| /sys | /dev " /proc/mounts
+          ls /usr/bin/sh /bin/sh 2>&1
+          echo
+          echo "--- modules ---"
+          ls /lib/modules/ 2>&1
+          ls /sys/module/overlay 2>/dev/null && echo "overlay loaded" || echo "overlay NOT loaded"
+          echo
+          echo "--- stateful ---"
+          mkdir -p /mnt/stateful_partition
+          mount /dev/block/by-name/state /mnt/stateful_partition 2>&1 && echo "STATE MOUNTED" || echo "STATE mount failed"
+          ls /mnt/stateful_partition 2>&1 | head -20
+          echo
+          echo "--- display ---"
+          dmesg | grep -iE "panel|dsi|msm|mdss|backlight|fb0|drm" | head -60
+          echo
+          echo "--- firmware / dri ---"
+          ls /dev/dri/ 2>&1
+          ls /usr/lib64/dri/ 2>&1 | head
+          ls /usr/lib64/libgallium-25.0.7.so 2>&1
+          echo
+          echo "==== bootlog END ===="
+          sync
+          sleep 5
+          poweroff -f 2>/dev/null || reboot -f 2>/dev/null
+          while true; do sleep 10; done
+          BOOTLOG
+          sudo chmod 755 "$ROOTFS_MOUNT/usr/bin/bootlog.sh"
+          echo "✓ bootlog.sh baked"
+
       - name: "Download GPU Stack"
         uses: actions/download-artifact@v8
         with:
@@ -632,6 +672,20 @@ jobs:
             -o boot-alt.img
           echo "✓ boot-alt.img (cmdline: $CMDLINE_ALT)"
 
+          # Diagnostic variant: init runs bootlog.sh (writes /bootlog.txt on the
+          # rootfs, powers off) - read the file from TWRP, no screen needed.
+          CMDLINE_LOG="root=PARTLABEL=$PARTITION rootwait rw init=/usr/bin/bootlog.sh console=tty0 loglevel=7"
+          ./mkbootimg \
+            --kernel kernel.bin \
+            --cmdline "$CMDLINE_LOG" \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --tags_offset 0x01e00000 \
+            --pagesize 4096 \
+            --id \
+            -o boot-log.img
+          echo "✓ boot-log.img (cmdline: $CMDLINE_LOG)"
+
       - name: "[Custom] Generate boot.img"
         if: ${{ inputs.kernel_source == 'custom_build' }}
         run: |
@@ -689,6 +743,16 @@ jobs:
         with:
           name: boot-fydeos-${{ steps.partition.outputs.label }}-alt
           path: boot-alt.img
+          retention-days: 14
+          if-no-files-found: warn
+          compression-level: 1
+
+      - name: "Upload Boot Image (bootlog diag)"
+        if: ${{ inputs.kernel_source != 'custom_build' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: boot-fydeos-${{ steps.partition.outputs.label }}-log
+          path: boot-log.img
           retention-days: 14
           if-no-files-found: warn
           compression-level: 1

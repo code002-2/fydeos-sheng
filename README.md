@@ -63,6 +63,20 @@ fastboot reboot
 > Without it the device boots the other (empty) slot and shows a black screen
 > with no logs, while TWRP still works fine.
 
+### Screenless diagnostics
+
+If the screen stays black, use the **bootlog** variant instead of `boot.img`:
+
+```bash
+fastboot flash boot boot-fydeos-<label>-log.img   # runs bootlog.sh, powers off
+fastboot reboot
+# wait ~30 s, force power off, boot into TWRP:
+cat /data/bootlog.txt     # or: cat /data/bootlog.txt | less
+```
+
+It writes boot state (rootfs mount, modules, stateful, `dmesg` display lines,
+firmware/DRI listing) to `/bootlog.txt` on the rootfs — no screen needed.
+
 ### 4. First Boot
 
 - The kernel cmdline of the repacked `boot.img` shows boot logs on the screen (`console=tty0`, `loglevel=7`).
