@@ -229,12 +229,81 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
+  # GPU stack — libdrm(freedreno) + Mesa 25.0.7 (freedreno/swrast) for Adreno 740
+  # ==========================================================================
+  build-gpu-stack:
+    name: "Build GPU Stack (freedreno)"
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: "Install Build Tools"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config bison flex \
+            python3-mako python3-ply \
+            libdrm-dev libudev-dev libexpat1-dev libwayland-dev
+          echo "✓ Build tools installed"
+
+      - name: "Build libdrm (freedreno)"
+        run: |
+          curl -fsSL -o libdrm.tar.xz https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz
+          tar -xf libdrm.tar.xz
+          cd libdrm-2.4.124
+          meson setup build -Dfreedreno=enabled -Dbuildtype=release
+          ninja -C build
+          DESTDIR=$PWD/stage meson install -C build
+          cd ..
+          find . -name 'libdrm.so*' -not -path './stage/*' | head -n1
+          STAGE_LIBDRM=$(find stage -name 'libdrm.so.2.124.0' | head -n1)
+          echo "  staging: $STAGE_LIBDRM"
+          cp "$STAGE_LIBDRM" libdrm-2.4.124.so
+          strings libdrm-2.4.124.so | grep -m3 -i freedreno || echo "WARNING: no freedreno strings"
+          echo "✓ libdrm built"
+
+      - name: "Build Mesa (freedreno)"
+        run: |
+          curl -fsSL -o mesa.tar.gz https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-25.0.7/mesa-mesa-25.0.7.tar.gz
+          tar -xf mesa.tar.gz
+          cd mesa-mesa-25.0.7
+          meson setup build \
+            -Dgallium-drivers=freedreno,swrast \
+            -Dvulkan-drivers= \
+            -Dplatforms=drm,surfaceless \
+            -Degl=enabled \
+            -Dgles1=enabled \
+            -Dgles2=enabled \
+            -Dglx=disabled \
+            -Dgbm=enabled \
+            -Dllvm=disabled \
+            -Dbuildtype=release
+          ninja -C build
+          DESTDIR=$PWD/stage meson install -C build
+          cd ..
+          STAGE_GALLIUM=$(find stage -name 'libgallium-25.0.7.so' | head -n1)
+          echo "  staging: $STAGE_GALLIUM"
+          [ -n "$STAGE_GALLIUM" ] || { echo "::error::libgallium not built"; exit 1; }
+          cp "$STAGE_GALLIUM" libgallium-25.0.7.so
+          strings libgallium-25.0.7.so | grep -m3 -i freedreno || true
+          echo "✓ Mesa built"
+
+      - name: "Upload GPU Stack"
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-stack
+          path: |
+            libgallium-25.0.7.so
+            libdrm-2.4.124.so
+          retention-days: 14
+          if-no-files-found: error
+
+  # ==========================================================================
   # RootFS Assembly — FydeOS ROOT-A + sheng kernel/firmware + STATE image
   # ==========================================================================
   build-rootfs:
     name: "Build FydeOS RootFS"
     runs-on: ubuntu-24.04-arm
-    needs: [build-kernel]
+    needs: [build-kernel, build-gpu-stack]
     permissions:
       contents: read
       packages: read
@@ -434,6 +503,25 @@ jobs:
         run: |
           sudo cp -a fw-src/. "$ROOTFS_MOUNT/usr/lib/firmware/"
           echo "✓ Sheng firmware installed"
+
+      - name: "Download GPU Stack"
+        uses: actions/download-artifact@v8
+        with:
+          name: gpu-stack
+          path: gpu-stack
+
+      - name: "Install Freedreno GPU Stack"
+        run: |
+          # Mesa 25.0.7 with the freedreno (Adreno 740) driver + libdrm with
+          # freedreno support; keeps ChromeOS's libdril/minigbm untouched.
+          sudo cp gpu-stack/libgallium-25.0.7.so "$ROOTFS_MOUNT/usr/lib64/libgallium-25.0.7.so"
+          sudo cp gpu-stack/libdrm-2.4.124.so   "$ROOTFS_MOUNT/usr/lib64/libdrm.so.2.124.0"
+          # DRI loader looks for msm_dri.so (matches the existing vc4/v3d pattern)
+          sudo ln -sfn libdril_dri.so "$ROOTFS_MOUNT/usr/lib64/dri/msm_dri.so"
+          echo "  verification:"
+          sudo ls -l "$ROOTFS_MOUNT/usr/lib64/dri/msm_dri.so"
+          strings "$ROOTFS_MOUNT/usr/lib64/libdrm.so.2.124.0" | grep -m2 -i freedreno || true
+          echo "✓ Freedreno GPU stack installed"
 
       - name: "Verify RootFS"
         run: |
