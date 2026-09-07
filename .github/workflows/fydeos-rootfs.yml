@@ -450,8 +450,9 @@ jobs:
           sudo umount "$ROOTFS_MOUNT" 2>/dev/null || true
           # /sys path gives partition start/size in 512-byte sectors
           PART=$(basename "$ROOTFS_DEV")
-          START=$(cat "/sys/block/$PART/start")
-          SIZE=$(cat "/sys/block/$PART/size")
+          DISK=$(basename "$(dirname "$ROOTFS_DEV")")
+          START=$(cat "/sys/block/$DISK/$PART/start")
+          SIZE=$(cat "/sys/block/$DISK/$PART/size")
           echo "  Partition $PART: start=$START size=$SIZE sectors"
           dd if="$BIN" of=rootfs.img bs=512 skip="$START" count="$SIZE" status=progress conv=fsync
           sudo losetup -d "$LOOP" 2>/dev/null || true
