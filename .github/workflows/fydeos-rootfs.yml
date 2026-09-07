@@ -543,9 +543,9 @@ jobs:
           KVER=$(ls /lib/modules/ 2>/dev/null | head -n1)
           echo "KVER=$KVER" >> /bootlog.txt 2>/dev/null
           if [ -n "$KVER" ]; then
-            for m in $(find /lib/modules/$KVER/kernel -name '*.ko*' 2>/dev/null | sed 's|/lib/modules/.*/kernel/||;s|\.ko.*||;s|/|_|g'); do
-              modprobe "$m" 2>/dev/null
-            done
+            # correct way: module names are basenames of the entries in modules.dep
+            sed 's/:.*//' /lib/modules/$KVER/modules.dep 2>/dev/null | \
+              while read -r m; do modprobe "$(basename "$m" .ko)" 2>/dev/null; done
           fi
           sleep 15
           exec > /bootlog.txt 2>&1
@@ -567,7 +567,9 @@ jobs:
           echo
           echo "--- modules ---"
           ls /lib/modules/ 2>&1
-          lsmod 2>&1 | head -30
+          lsmod 2>&1 | head -40
+          echo "--- msm/drm/gpu modules present ---"
+          find /lib/modules/ -iname '*msm*' -o -iname '*drm*' -o -iname '*adreno*' -o -iname '*gpu*' 2>/dev/null | head -30
           echo
           echo "--- stateful ---"
           mkdir -p /mnt/stateful_partition
